@@ -142,6 +142,7 @@ class FileSelection(object):
 
         self.select_day.on_change('value',
                                   wrap_on_change(self.update_wrf_models,
+                                                 self.update_file,
                                                  self.update_data))
         self.select_model.on_change('value',
                                     wrap_on_change(self.update_file,
@@ -202,3 +203,6 @@ class FileSelection(object):
         self.source.data.update({'masked_regrid': [masked_regrid],
                                  'xn': [xn], 'yn': [yn],
                                  'valid_date': [self.valid_datetime]})
+
+    def get_timeseries(self, xi, yi):
+        return load_tseries(xi, yi)

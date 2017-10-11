@@ -30,7 +30,7 @@ from tornado import gen
 
 import config
 from models.binned_color_mapper import BinnedColorMapper
-from util import wrap_on_change
+from util import wrap_on_change, time_setter
 from data import FileSelection
 
 nws_radar_cmap = ListedColormap(
@@ -86,16 +86,17 @@ class ADVIApp(object):
     def register_models_and_sources(self):
         self.sources['hover_pt'] = ColumnDataSource(data={
             'x': [0], 'y': [0], 'x_idx': [0],
-            'y_idx': [0]})
+            'y_idx': [0], 'time': [0], 'val': [0]})
         self.sources['click_pt'] = ColumnDataSource(data={
             'clickx': [0], 'clicky': [0]})
         self.sources['summary_stats'] = ColumnDataSource(data={
             'current_val': [0], 'mean': [0], 'median': [0],
-            'bin_width': [0]})
+            'bin_width': [0], 'valid_ms': [0]})
         self.make_map_figure()
         self.make_histogram_figure()
         self.fileselector = FileSelection(self.variable)
         self.sources['raw_data'] = self.fileselector.source
+        self.make_timeseries_figure()
 
     def make_map_figure(self):
         map_fig = figure(plot_width=self.width, plot_height=self.height,
@@ -221,42 +222,79 @@ class ADVIApp(object):
 
     @gen.coroutine
     def update_for_map_click(self):
-        logging.info('Moving click marker')
         x = self.sources['click_pt'].data['clickx'][0]
         y = self.sources['click_pt'].data['clicky'][0]
 
         raw_data = self.sources['raw_data'].data
-        masked_regrid = raw_data['masked_regrid'][0]
         xn = raw_data['xn'][0]
         yn = raw_data['yn'][0]
         x_idx = np.abs(xn - x).argmin()
         y_idx = np.abs(yn - y).argmin()
 
+        self.sources['hover_pt'].data.update({
+            'x_idx': [x_idx],
+            'y_idx': [y_idx],
+            'x': [xn[x_idx]],
+            'y': [yn[y_idx]],
+            })
+
+    def make_timeseries_figure(self):
+        hheight = int(self.width / 2)
+        tseries_fig = figure(
+            height=hheight, width=hheight,
+            x_axis_type='datetime',
+            tools=self.tools + ', wheel_zoom',
+            active_scroll='wheel_zoom',
+            toolbar_location='right',
+            title='Time-series at selected location',
+            y_axis_label=self.variable_options.XLABEL)
+
+        tline = tseries_fig.line(x=[0], y=[self.variable_options.MAX_VAL],
+                                 color=config.BLUE)
+        self.sources['timeseries'] = tline.data_source
+
+        tseries_fig.diamond(x='valid_ms', y='current_val', color=config.RED,
+                            source=self.sources['summary_stats'],
+                            level='overlay', size=6)
+        self.models['timeseries_fig'] = tseries_fig
+
+    @gen.coroutine
+    def update_timeseries(self):
+        x_idx = self.sources['hover_pt'].data['x_idx'][0]
+        y_idx = self.sources['hover_pt'].data['y_idx'][0]
+
+        line_data = self.fileselector.get_timeseries(x_idx, y_idx)
+        if len(line_data.dropna().values) < 1:
+            self.sources['timeseries'].data.update({
+                'y': [self.variable_options.MAX_VAL], 'x': [0]})
+        else:
+            self.sources['timeseries'].data.update({
+                'y': line_data.values,
+                'x': time_setter(line_data.index)})
+
+        masked_regrid = self.sources['raw_data'].data['masked_regrid'][0]
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             val = float(masked_regrid[y_idx, x_idx])
-        self.sources['summary_stats'].data.update({'current_val': [val]})
-
-        if val <= self.variable_options.MIN_VAL or val == np.nan:
-            val = self.variable_options.MIN_VAL * 1.05
-        elif val > self.variable_options.MAX_VAL:
-            val = self.variable_options.MAX_VAL * .99
-        self.sources['hover_pt'].data.update({'x_idx': [x_idx],
-                                              'y_idx': [y_idx],
-                                              'x': [xn[x_idx]],
-                                              'y': [yn[y_idx]]})
+        self.sources['summary_stats'].data.update({
+            'current_val': [val],
+            'valid_ms': [
+                time_setter(self.sources['raw_data'].data['valid_date'][0])]})
 
     def make_layout(self):
         lay = column(
             self.fileselector.make_layout(),
             gridplot([self.models['map_fig']],
-                     [self.models['hist_fig']],
+                     [self.models['timeseries_fig'], self.models['hist_fig']],
                      toolbar_location='left'))
         return lay
 
     def add_callbacks(self):
         self.sources['raw_data'].on_change(
-            'data', wrap_on_change(self.update_map, self.update_histogram))
+            'data', wrap_on_change(self.update_map,
+                                   self.update_histogram,
+                                   self.update_for_map_click))
+
         map_fig = self.models['map_fig']
         for what, on in [(map_fig.x_range, 'start'),
                          (map_fig.x_range, 'end'),
@@ -264,6 +302,9 @@ class ADVIApp(object):
                          (map_fig.y_range, 'end')]:
             what.on_change(on, wrap_on_change(
                 self.update_histogram, timeout=100))
+
+        self.sources['hover_pt'].on_change(
+            'data', wrap_on_change(self.update_timeseries))
 
         def move_click_marker(event):
             self.sources['click_pt'].data.update({'clickx': [event.x],
