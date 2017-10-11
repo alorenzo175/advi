@@ -28,10 +28,10 @@ import tables
 from tornado import gen
 
 
-from models.disabled_select import DisabledSelect
-from models.binned_color_mapper import BinnedColorMapper
 import config
-import data
+from models.binned_color_mapper import BinnedColorMapper
+from util import wrap_on_change
+from data import FileSelection
 
 nws_radar_cmap = ListedColormap(
     name='nws_radar', colors=(
@@ -62,6 +62,7 @@ class ADVIApp(object):
     def __init__(self, variable):
         self.variable = variable
         self.variable_options = config.VAR_OPTS[variable]
+        self.tools = 'pan, box_zoom, reset, save'
         self.width = 768
         self.height = int(self.width / 1.6)
         self._first = True
@@ -74,36 +75,63 @@ class ADVIApp(object):
         cmap = get_cmap(self.variable_options.CMAP)
         norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
         sm = ScalarMappable(norm=norm, cmap=cmap)
-        color_pal = [RGB(*val).to_hex() for val in
-                     sm.to_rgba(levels, bytes=True, norm=True)[:-1]]
+        self.color_pal = [RGB(*val).to_hex() for val in
+                          sm.to_rgba(levels, bytes=True, norm=True)[:-1]]
         self.continuous_mapper = LinearColorMapper(
-            color_pal, low=sm.get_clim()[0], high=sm.get_clim()[1])
-        bin_pal = color_pal.copy()
+            self.color_pal, low=sm.get_clim()[0], high=sm.get_clim()[1])
+        bin_pal = self.color_pal.copy()
         bin_pal.append('#ffffff')
         self.bin_mapper = BinnedColorMapper(bin_pal, alpha=config.ALPHA)
 
     def register_models_and_sources(self):
-        map_fig, map_sources = make_map_figure(
-            self.width, self.height, self.bin_mapper, self.continuous_mapper,
-            self.levels)
-
-        self.sources.update(map_sources)
-        self.models.update({'map_fig': map_fig})
-
+        self.sources['hover_pt'] = ColumnDataSource(data={
+            'x': [0], 'y': [0], 'x_idx': [0],
+            'y_idx': [0]})
+        self.sources['click_pt'] = ColumnDataSource(data={
+            'clickx': [0], 'clicky': [0]})
+        self.sources['summary_stats'] = ColumnDataSource(data={
+            'current_val': [0], 'mean': [0], 'median': [0],
+            'bin_width': [0]})
+        self.make_map_figure()
+        self.make_histogram_figure()
         self.fileselector = FileSelection(self.variable)
         self.sources['raw_data'] = self.fileselector.source
 
-    def make_layout(self):
-        lay = column(
-            self.fileselector.make_layout(),
-            gridplot([self.models['map_fig']],
-                     [],
-                     toolbar_location='left'))
-        return lay
+    def make_map_figure(self):
+        map_fig = figure(plot_width=self.width, plot_height=self.height,
+                         y_axis_type=None, x_axis_type=None,
+                         toolbar_location='left',
+                         tools=self.tools + ', wheel_zoom',
+                         active_scroll='wheel_zoom',
+                         title='', name='mapfig',
+                         responsive=True)
+        rgba_img_source = ColumnDataSource(data={'image': [], 'x': [], 'y': [],
+                                                 'dw': [], 'dh': []})
+        map_fig.image(image='image', x='x', y='y', dw='dw', dh='dh',
+                      source=rgba_img_source, color_mapper=self.bin_mapper)
+        ticker = FixedTicker(ticks=self.levels[::3])
+        cb = ColorBar(color_mapper=self.continuous_mapper, location=(0, 0),
+                      scale_alpha=config.ALPHA, ticker=ticker)
+        # Need to use this and not bokeh.tile_providers.STAMEN_TONER
+        # https://github.com/bokeh/bokeh/issues/4770
+        STAMEN_TONER = WMTSTileSource(
+            url='https://stamen-tiles.a.ssl.fastly.net/toner-lite/{Z}/{X}/{Y}.png',  # NOQA
+            attribution=(
+                'Map tiles by <a href="http://stamen.com">Stamen Design</a>, '
+                'under <a href="http://creativecommons.org/licenses/by/3.0">CC'
+                ' BY 3.0</a>. Map data by <a href="http://openstreetmap.org">'
+                'OpenStreetMap</a>, under '
+                '<a href="http://www.openstreetmap.org/copyright">ODbL</a>'
+            )
+        )
+        map_fig.add_tile(STAMEN_TONER)
+        map_fig.add_layout(cb, 'right')
 
-    def add_callbacks(self):
-        self.sources['raw_data'].on_change(
-            'data', wrap_on_change(self.update_map))
+        map_fig.x(x='x', y='y', size=10, color=config.RED, alpha=config.ALPHA,
+                  source=self.sources['hover_pt'], level='overlay')
+
+        self.models['map_fig'] = map_fig
+        self.sources['rgba_img'] = rgba_img_source
 
     @gen.coroutine
     def update_map(self):
@@ -135,139 +163,115 @@ class ADVIApp(object):
             self._first = False
         logging.debug('Done updating map')
 
+    def make_histogram_figure(self):
+        hheight = int(self.width / 2)
+        # Make the histogram figure
+        hist_fig = figure(plot_width=hheight, plot_height=hheight,
+                          toolbar_location='right',
+                          x_axis_label=self.variable_options.XLABEL,
+                          y_axis_label='Counts',
+                          tools=self.tools + ', ywheel_zoom',
+                          active_scroll='ywheel_zoom',
+                          x_range=Range1d(start=self.variable_options.MIN_VAL,
+                                          end=self.variable_options.MAX_VAL),
+                          title='Histogram of map pixels')
 
+        # make histograms
+        bin_width = self.levels[1] - self.levels[0]
+        self.sources['summary_stats'].data.update({'bin_width': [bin_width]})
+        bin_centers = self.levels[:-1] + bin_width / 2
+        histbars = hist_fig.vbar(x=bin_centers, top=[3.0e6] * len(bin_centers),
+                                 width=bin_width, bottom=0,
+                                 color=self.color_pal, fill_alpha=config.ALPHA)
+        self.sources['histogram'] = histbars.data_source
+        self.models['hist_fig'] = hist_fig
 
-def make_map_figure(width, height, bin_mapper, continuous_mapper, levels):
-    map_fig = figure(plot_width=width, plot_height=height,
-                     y_axis_type=None, x_axis_type=None,
-                     toolbar_location='left',
-                     tools='pan, box_zoom, reset, save, wheel_zoom',
-                     active_scroll='wheel_zoom',
-                     title='', name='mapfig',
-                     responsive=True)
-    rgba_img_source = ColumnDataSource(data={'image': [], 'x': [], 'y': [],
-                                             'dw': [], 'dh': []})
-    map_fig.image(image='image', x='x', y='y', dw='dw', dh='dh',
-                  source=rgba_img_source, color_mapper=bin_mapper)
+    @gen.coroutine
+    def update_histogram(self):
+        map_fig = self.models['map_fig']
+        left = map_fig.x_range.start
+        right = map_fig.x_range.end
+        bottom = map_fig.y_range.start
+        top = map_fig.y_range.end
 
-    ticker = FixedTicker(ticks=levels[::3])
-    cb = ColorBar(color_mapper=continuous_mapper, location=(0, 0),
-                  scale_alpha=config.ALPHA, ticker=ticker)
-    # Need to use this and not bokeh.tile_providers.STAMEN_TONER
-    # https://github.com/bokeh/bokeh/issues/4770
-    STAMEN_TONER = WMTSTileSource(
-        url='https://stamen-tiles.a.ssl.fastly.net/toner-lite/{Z}/{X}/{Y}.png',
-        attribution=(
-            'Map tiles by <a href="http://stamen.com">Stamen Design</a>, '
-            'under <a href="http://creativecommons.org/licenses/by/3.0">CC BY '
-            '3.0</a>. Map data by <a href="http://openstreetmap.org">'
-            'OpenStreetMap</a>, under '
-            '<a href="http://www.openstreetmap.org/copyright">ODbL</a>'
-        )
-    )
-    map_fig.add_tile(STAMEN_TONER)
-    map_fig.add_layout(cb, 'right')
+        raw_data = self.sources['raw_data'].data
+        masked_regrid = raw_data['masked_regrid'][0]
+        xn = raw_data['xn'][0]
+        yn = raw_data['yn'][0]
 
-    hover_pt = ColumnDataSource(data={'x': [0], 'y': [0], 'x_idx': [0],
-                                      'y_idx': [0]})
-    map_fig.x(x='x', y='y', size=10, color=config.RED, alpha=config.ALPHA,
-              source=hover_pt, level='overlay')
+        left_idx = np.abs(xn - left).argmin()
+        right_idx = np.abs(xn - right).argmin() + 1
+        bottom_idx = np.abs(yn - bottom).argmin()
+        top_idx = np.abs(yn - top).argmin() + 1
+        logging.debug('Updating histogram...')
+        try:
+            new_subset = masked_regrid[bottom_idx:top_idx, left_idx:right_idx]
+        except TypeError:
+            return
+        counts, _ = np.histogram(
+            new_subset.clip(max=self.variable_options.MAX_VAL),
+            bins=self.levels,
+            range=(self.levels.min(), self.levels.max()))
 
-    return map_fig, {'rgba_img': rgba_img_source, 'hover_pt': hover_pt}
+        self.sources['histogram'].data.update({'top': counts})
+        logging.debug('Done updating histogram')
 
+        self.sources['summary_stats'].data.update(
+            {'mean': [float(new_subset.mean())]})
 
-def wrap_on_change(*funcs, timeout=None):
-    def wrapper(attr, old, new):
-        for f in funcs:
-            try:
-                if timeout is not None:
-                    curdoc().add_timeout_callback(f, timeout)
-                else:
-                    curdoc().add_next_tick_callback(f)
-            except ValueError:
-                pass
-    return wrapper
+    @gen.coroutine
+    def update_for_map_click(self):
+        logging.info('Moving click marker')
+        x = self.sources['click_pt'].data['clickx'][0]
+        y = self.sources['click_pt'].data['clicky'][0]
 
+        raw_data = self.sources['raw_data'].data
+        masked_regrid = raw_data['masked_regrid'][0]
+        xn = raw_data['xn'][0]
+        yn = raw_data['yn'][0]
+        x_idx = np.abs(xn - x).argmin()
+        y_idx = np.abs(yn - y).argmin()
 
-class FileSelection(object):
-    def __init__(self, variable):
-        self.variable = variable
-        self.variable_options = config.VAR_OPTS[variable]
-        self.file_dates = data.find_fx_times(self.variable_options.VAR)
-        self.source = ColumnDataSource(data={
-            'masked_regrid': [0], 'xn': [0], 'yn': [0],
-            'valid_date': [dt.datetime.now()]})
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            val = float(masked_regrid[y_idx, x_idx])
+        self.sources['summary_stats'].data.update({'current_val': [val]})
 
-        self.select_day = Select(title='Initialization Day',
-                                 value=self.file_dates[0],
-                                 options=self.file_dates)
-        self.select_model = DisabledSelect(title='Initialization', value='',
-                                           options=[])
-        self.select_time = Slider(title='Forecast Time-Step', start=0, end=1,
-                                  value=0, name='timeslider')
-
-        self.select_day.on_change('value',
-                                  wrap_on_change(self.update_wrf_models,
-                                                 self.update_data))
-        self.select_model.on_change('value',
-                                    wrap_on_change(self.update_file,
-                                                   self.update_data))
-        self.select_time.on_change('value',
-                                   wrap_on_change(self.update_data,
-                                                  timeout=100))
-        self.update_wrf_models()
+        if val <= self.variable_options.MIN_VAL or val == np.nan:
+            val = self.variable_options.MIN_VAL * 1.05
+        elif val > self.variable_options.MAX_VAL:
+            val = self.variable_options.MAX_VAL * .99
+        self.sources['hover_pt'].data.update({'x_idx': [x_idx],
+                                              'y_idx': [y_idx],
+                                              'x': [xn[x_idx]],
+                                              'y': [yn[y_idx]]})
 
     def make_layout(self):
-        lay = row([self.select_day, self.select_model, self.select_time])
+        lay = column(
+            self.fileselector.make_layout(),
+            gridplot([self.models['map_fig']],
+                     [self.models['hist_fig']],
+                     toolbar_location='left'))
         return lay
 
-    @property
-    def time_step(self):
-        return int(self.select_time.value)
+    def add_callbacks(self):
+        self.sources['raw_data'].on_change(
+            'data', wrap_on_change(self.update_map, self.update_histogram))
+        map_fig = self.models['map_fig']
+        for what, on in [(map_fig.x_range, 'start'),
+                         (map_fig.x_range, 'end'),
+                         (map_fig.y_range, 'start'),
+                         (map_fig.y_range, 'end')]:
+            what.on_change(on, wrap_on_change(
+                self.update_histogram, timeout=100))
 
-    @property
-    def valid_datetime(self):
-        return self.times[self.time_step]
+        def move_click_marker(event):
+            self.sources['click_pt'].data.update({'clickx': [event.x],
+                                                  'clicky': [event.y]})
+            self.update_for_map_click()
 
-    @property
-    def wrf_model(self):
-        return self.select_model.value
-
-    @property
-    def initialization_day(self):
-        return self.select_day.value
-
-    @gen.coroutine
-    def update_wrf_models(self):
-        wrf_models = data.get_wrf_models(self.variable_options.VAR,
-                                         self.initialization_day)
-        self.select_model.options = wrf_models
-        thelabel = ''
-        for m, disabled in wrf_models:
-            if m == self.wrf_model and not disabled:
-                thelabel = m
-            if not disabled and not thelabel:
-                thelabel = m
-        self.select_model.value = thelabel
-
-    @gen.coroutine
-    def update_file(self):
-        self.times = data.load_file(self.variable_options.VAR,
-                                    self.wrf_model, self.initialization_day)
-        options = [t.strftime('%Y-%m-%d %H:%MZ') for t in self.times]
-        self.select_time.end = len(options) - 1
-        if self.select_time.value > self.select_time.end:
-            self.select_time.value = self.select_time.end
-
-    @gen.coroutine
-    def update_data(self):
-        logging.info('Getting data...')
-        masked_regrid, X, Y = data.load_data(self.valid_datetime)
-        xn = X[0]
-        yn = Y[:, 0]
-        self.source.data.update({'masked_regrid': [masked_regrid],
-                                 'xn': [xn], 'yn': [yn],
-                                 'valid_date': [self.valid_datetime]})
+        map_fig.on_event(events.Tap, move_click_marker)
+        map_fig.on_event(events.Press, move_click_marker)
 
 
 app = ADVIApp(sys.argv[1])

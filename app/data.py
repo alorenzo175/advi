@@ -1,4 +1,3 @@
-from collections import OrderedDict
 import datetime as dt
 import logging
 from pathlib import Path
@@ -8,9 +7,15 @@ import os
 import numpy as np
 import pandas as pd
 import tables
+from bokeh.layouts import row
+from bokeh.models import Slider, ColumnDataSource
+from bokeh.models.widgets import Select
+from tornado import gen
 
 
 import config
+from models.disabled_select import DisabledSelect
+from util import wrap_on_change
 
 
 class H5File(object):
@@ -116,3 +121,84 @@ def get_wrf_models(variable, date_string):
             disabled[m] = False
     mld = [(strfmodel(k), v) for k, v in disabled.items()]
     return mld
+
+
+class FileSelection(object):
+    def __init__(self, variable):
+        self.variable = variable
+        self.variable_options = config.VAR_OPTS[variable]
+        self.file_dates = find_fx_times(self.variable_options.VAR)
+        self.source = ColumnDataSource(data={
+            'masked_regrid': [0], 'xn': [0], 'yn': [0],
+            'valid_date': [dt.datetime.now()]})
+
+        self.select_day = Select(title='Initialization Day',
+                                 value=self.file_dates[0],
+                                 options=self.file_dates)
+        self.select_model = DisabledSelect(title='Initialization', value='',
+                                           options=[])
+        self.select_time = Slider(title='Forecast Time-Step', start=0, end=1,
+                                  value=0, name='timeslider')
+
+        self.select_day.on_change('value',
+                                  wrap_on_change(self.update_wrf_models,
+                                                 self.update_data))
+        self.select_model.on_change('value',
+                                    wrap_on_change(self.update_file,
+                                                   self.update_data))
+        self.select_time.on_change('value',
+                                   wrap_on_change(self.update_data,
+                                                  timeout=100))
+        self.update_wrf_models()
+
+    def make_layout(self):
+        lay = row([self.select_day, self.select_model, self.select_time])
+        return lay
+
+    @property
+    def time_step(self):
+        return int(self.select_time.value)
+
+    @property
+    def valid_datetime(self):
+        return self.times[self.time_step]
+
+    @property
+    def wrf_model(self):
+        return self.select_model.value
+
+    @property
+    def initialization_day(self):
+        return self.select_day.value
+
+    @gen.coroutine
+    def update_wrf_models(self):
+        wrf_models = get_wrf_models(self.variable_options.VAR,
+                                    self.initialization_day)
+        self.select_model.options = wrf_models
+        thelabel = ''
+        for m, disabled in wrf_models:
+            if m == self.wrf_model and not disabled:
+                thelabel = m
+            if not disabled and not thelabel:
+                thelabel = m
+        self.select_model.value = thelabel
+
+    @gen.coroutine
+    def update_file(self):
+        self.times = load_file(self.variable_options.VAR,
+                               self.wrf_model, self.initialization_day)
+        options = [t.strftime('%Y-%m-%d %H:%MZ') for t in self.times]
+        self.select_time.end = len(options) - 1
+        if self.select_time.value > self.select_time.end:
+            self.select_time.value = self.select_time.end
+
+    @gen.coroutine
+    def update_data(self):
+        logging.info('Getting data...')
+        masked_regrid, X, Y = load_data(self.valid_datetime)
+        xn = X[0]
+        yn = Y[:, 0]
+        self.source.data.update({'masked_regrid': [masked_regrid],
+                                 'xn': [xn], 'yn': [yn],
+                                 'valid_date': [self.valid_datetime]})
