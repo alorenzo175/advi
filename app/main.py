@@ -94,6 +94,7 @@ class ADVIApp(object):
             'bin_width': [0], 'valid_ms': [0]})
         self.make_map_figure()
         self.make_histogram_figure()
+        self.models['info_div'] = Div(width=self.width)
         self.fileselector = FileSelection(self.variable)
         self.sources['raw_data'] = self.fileselector.source
         self.make_timeseries_figure()
@@ -281,12 +282,28 @@ class ADVIApp(object):
             'valid_ms': [
                 time_setter(self.sources['raw_data'].data['valid_date'][0])]})
 
+    @gen.coroutine
+    def update_info_text(self):
+        info_text = """
+<div class="well">
+<b>Selected Value:</b> {current_val:0.1f} <b>Area Mean:</b> {mean:0.1f} <b>Bin Width</b> {bin_width:0.1f}
+</div>
+"""  # NOQA
+        summary_stats = self.sources['summary_stats'].data
+        self.models['info_div'].text = info_text.format(
+            current_val=float(summary_stats['current_val'][0]),
+            mean=summary_stats['mean'][0],
+            bin_width=summary_stats['bin_width'][0]
+        )
+
     def make_layout(self):
         lay = column(
             self.fileselector.make_layout(),
             gridplot([self.models['map_fig']],
                      [self.models['timeseries_fig'], self.models['hist_fig']],
-                     toolbar_location='left'))
+                     toolbar_location='left'),
+            self.models['info_div']
+            )
         return lay
 
     def add_callbacks(self):
@@ -305,6 +322,8 @@ class ADVIApp(object):
 
         self.sources['hover_pt'].on_change(
             'data', wrap_on_change(self.update_timeseries))
+        self.sources['summary_stats'].on_change(
+            'data', wrap_on_change(self.update_info_text, timeout=100))
 
         def move_click_marker(event):
             self.sources['click_pt'].data.update({'clickx': [event.x],

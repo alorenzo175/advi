@@ -196,7 +196,6 @@ class FileSelection(object):
 
     @gen.coroutine
     def update_data(self):
-        logging.info('Getting data...')
         masked_regrid, X, Y = load_data(self.valid_datetime)
         xn = X[0]
         yn = Y[:, 0]
