@@ -1,11 +1,6 @@
 # coding: utf-8
 
-from collections import OrderedDict
-import datetime as dt
-from functools import partial
-import importlib
 import logging
-from pathlib import Path
 import os
 import sys
 import warnings
@@ -13,18 +8,16 @@ import warnings
 
 from bokeh import events
 from bokeh.colors import RGB
-from bokeh.layouts import gridplot, column, row
+from bokeh.layouts import gridplot, column
 from bokeh.models import (
     Range1d, LinearColorMapper, ColorBar, FixedTicker,
-    ColumnDataSource, WMTSTileSource, Slider)
-from bokeh.models.widgets import Select, Div
+    ColumnDataSource, WMTSTileSource)
+from bokeh.models.widgets import Div
 from bokeh.plotting import figure, curdoc
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.ticker import MaxNLocator
 from matplotlib.cm import ScalarMappable, get_cmap, register_cmap
 import numpy as np
-import pandas as pd
-import tables
 from tornado import gen
 
 
@@ -66,6 +59,7 @@ class ADVIApp(object):
         self.width = 768
         self.height = int(self.width / 1.6)
         self._first = True
+        self.fileselector = FileSelection(self.variable)
 
     def setup_coloring(self):
         levels = MaxNLocator(
@@ -83,7 +77,7 @@ class ADVIApp(object):
         bin_pal.append('#ffffff')
         self.bin_mapper = BinnedColorMapper(bin_pal, alpha=config.ALPHA)
 
-    def register_models_and_sources(self):
+    def make_sources(self):
         self.sources['hover_pt'] = ColumnDataSource(data={
             'x': [0], 'y': [0], 'x_idx': [0],
             'y_idx': [0], 'time': [0], 'val': [0]})
@@ -92,11 +86,22 @@ class ADVIApp(object):
         self.sources['summary_stats'] = ColumnDataSource(data={
             'current_val': [0], 'mean': [0], 'median': [0],
             'bin_width': [0], 'valid_ms': [0]})
+        self.sources['rgba_img'] = ColumnDataSource(
+            data={'image': [], 'x': [], 'y': [],
+                  'dw': [], 'dh': []})
+        self.sources['histogram'] = ColumnDataSource(data={
+            'x': np.array(self.levels[:-1]),
+            'top': np.array([3.0e6] * len(self.levels[:-1])),
+            'color': np.array(self.color_pal)})
+        self.sources['timeseries'] = ColumnDataSource(data={
+            'x': [0], 'y': [self.variable_options.MAX_VAL]})
+        self.sources['raw_data'] = self.fileselector.source
+
+    def register_models_and_sources(self):
+        self.make_sources()
         self.make_map_figure()
         self.make_histogram_figure()
         self.models['info_div'] = Div(width=self.width)
-        self.fileselector = FileSelection(self.variable)
-        self.sources['raw_data'] = self.fileselector.source
         self.make_timeseries_figure()
 
     def make_map_figure(self):
@@ -107,10 +112,10 @@ class ADVIApp(object):
                          active_scroll='wheel_zoom',
                          title='', name='mapfig',
                          responsive=True)
-        rgba_img_source = ColumnDataSource(data={'image': [], 'x': [], 'y': [],
-                                                 'dw': [], 'dh': []})
+
         map_fig.image(image='image', x='x', y='y', dw='dw', dh='dh',
-                      source=rgba_img_source, color_mapper=self.bin_mapper)
+                      source=self.sources['rgba_img'],
+                      color_mapper=self.bin_mapper)
         ticker = FixedTicker(ticks=self.levels[::3])
         cb = ColorBar(color_mapper=self.continuous_mapper, location=(0, 0),
                       scale_alpha=config.ALPHA, ticker=ticker)
@@ -133,7 +138,6 @@ class ADVIApp(object):
                   source=self.sources['hover_pt'], level='overlay')
 
         self.models['map_fig'] = map_fig
-        self.sources['rgba_img'] = rgba_img_source
 
     @gen.coroutine
     def update_map(self):
@@ -182,10 +186,11 @@ class ADVIApp(object):
         bin_width = self.levels[1] - self.levels[0]
         self.sources['summary_stats'].data.update({'bin_width': [bin_width]})
         bin_centers = self.levels[:-1] + bin_width / 2
-        histbars = hist_fig.vbar(x=bin_centers, top=[3.0e6] * len(bin_centers),
-                                 width=bin_width, bottom=0,
-                                 color=self.color_pal, fill_alpha=config.ALPHA)
-        self.sources['histogram'] = histbars.data_source
+        self.sources['histogram'].data.update({'x': bin_centers})
+        hist_fig.vbar(x='x', top='top', width=bin_width, bottom=0,
+                      fill_color='color', line_color='color',
+                      fill_alpha=config.ALPHA,
+                      source=self.sources['histogram'])
         self.models['hist_fig'] = hist_fig
 
     @gen.coroutine
@@ -250,9 +255,8 @@ class ADVIApp(object):
             title='Time-series at selected location',
             y_axis_label=self.variable_options.XLABEL)
 
-        tline = tseries_fig.line(x=[0], y=[self.variable_options.MAX_VAL],
-                                 color=config.BLUE)
-        self.sources['timeseries'] = tline.data_source
+        tseries_fig.line(x='x', y='y', color=config.BLUE,
+                         source=self.sources['timeseries'])
 
         tseries_fig.diamond(x='valid_ms', y='current_val', color=config.RED,
                             source=self.sources['summary_stats'],
