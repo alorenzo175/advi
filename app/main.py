@@ -55,7 +55,7 @@ class ADVIApp(object):
     def __init__(self, variable):
         self.variable = variable
         self.variable_options = config.VAR_OPTS[variable]
-        self.tools = 'pan, box_zoom, reset, save, wheel_zoom'
+        self.tools = 'pan, zoom_in, zoom_out, reset, tap, wheel_zoom'
         self.width = 768
         self.height = int(self.width / 1.6)
         self._first = True
