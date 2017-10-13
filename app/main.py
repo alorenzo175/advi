@@ -85,7 +85,7 @@ class ADVIApp(object):
             'clickx': [0], 'clicky': [0]})
         self.sources['summary_stats'] = ColumnDataSource(data={
             'current_val': [0], 'mean': [0], 'median': [0],
-            'bin_width': [0], 'valid_ms': [0]})
+            'bin_width': [0], 'valid_ms': [0], 'bincounts': [0]})
         self.sources['rgba_img'] = ColumnDataSource(
             data={'image': [], 'x': [], 'y': [],
                   'dw': [], 'dh': []})
@@ -191,6 +191,10 @@ class ADVIApp(object):
                       fill_color='color', line_color='color',
                       fill_alpha=config.ALPHA,
                       source=self.sources['histogram'])
+        hist_fig.diamond(
+            x='current_val', y='bincounts', color=config.RED,
+            source=self.sources['summary_stats'],
+            level='overlay', size=8)
         self.models['hist_fig'] = hist_fig
 
     @gen.coroutine
