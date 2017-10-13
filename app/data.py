@@ -37,52 +37,6 @@ DATA_DIRECTORY = os.getenv('ADVI_DATADIR',
                            config.DATA_DIRECTORY)
 
 
-def load_file(variable, model, fx_date='latest'):
-    dir = os.path.expanduser(DATA_DIRECTORY)
-    if fx_date == 'latest':
-        p = Path(dir)
-        model_dir = sorted([pp for pp in p.rglob(f'*{model}')],
-                           reverse=True)[0]
-    else:
-        model_dir = os.path.join(
-            dir, dt.datetime.strptime(fx_date,
-                                      '%Y-%m-%d').strftime('%Y/%m/%d'),
-            strpmodel(model))
-
-    path = os.path.join(model_dir,
-                        f'{variable}.h5')
-
-    global h5file
-    h5file = H5File(path)
-    global times
-    with h5file as h5:
-        times = pd.DatetimeIndex(
-            h5.get_node('/times')[:]).tz_localize('UTC')
-    return times
-
-
-def load_data(valid_time):
-    strformat = '%Y%m%dT%H%MZ'
-    with h5file as h5:
-        regridded_data = h5.get_node(f'/{valid_time.strftime(strformat)}')[:]
-        regridded_data[np.isnan(regridded_data)] = -999
-
-        X = h5.get_node('/X')[:]
-        Y = h5.get_node('/Y')[:]
-    masked_regrid = np.ma.masked_less(regridded_data, -998)
-    return masked_regrid, X, Y
-
-
-def load_tseries(xi, yi):
-    strformat = '%Y%m%dT%H%MZ'
-    rd = []
-    with h5file as h5:
-        for t in times:
-            rd.append(h5.get_node(f'/{t.strftime(strformat)}')[yi, xi])
-    data = pd.Series(rd, index=times)
-    return data
-
-
 def find_fx_times(variable):
     p = Path(DATA_DIRECTORY).expanduser()
     out = set()
@@ -158,6 +112,48 @@ class FileSelection(object):
                   width=768, height=100)
         return lay
 
+    def load_file(self, variable, model, fx_date='latest'):
+        dir = os.path.expanduser(DATA_DIRECTORY)
+        if fx_date == 'latest':
+            p = Path(dir)
+            model_dir = sorted([pp for pp in p.rglob(f'*{model}')],
+                               reverse=True)[0]
+        else:
+            model_dir = os.path.join(
+                dir, dt.datetime.strptime(fx_date,
+                                          '%Y-%m-%d').strftime('%Y/%m/%d'),
+                strpmodel(model))
+
+        path = os.path.join(model_dir,
+                            f'{variable}.h5')
+
+        self.h5file = H5File(path)
+        with self.h5file as h5:
+            times = pd.DatetimeIndex(
+                h5.get_node('/times')[:]).tz_localize('UTC')
+        return times
+
+    def load_data(self, valid_time):
+        strformat = '%Y%m%dT%H%MZ'
+        with self.h5file as h5:
+            regridded_data = h5.get_node(
+                f'/{valid_time.strftime(strformat)}')[:]
+            regridded_data[np.isnan(regridded_data)] = -999
+
+            X = h5.get_node('/X')[:]
+            Y = h5.get_node('/Y')[:]
+        masked_regrid = np.ma.masked_less(regridded_data, -998)
+        return masked_regrid, X, Y
+
+    def load_tseries(self, xi, yi):
+        strformat = '%Y%m%dT%H%MZ'
+        rd = []
+        with self.h5file as h5:
+            for t in self.times:
+                rd.append(h5.get_node(f'/{t.strftime(strformat)}')[yi, xi])
+        data = pd.Series(rd, index=self.times)
+        return data
+
     @property
     def time_step(self):
         return int(self.select_time.value)
@@ -189,8 +185,8 @@ class FileSelection(object):
 
     @gen.coroutine
     def update_file(self):
-        self.times = load_file(self.variable_options.VAR,
-                               self.wrf_model, self.initialization_day)
+        self.times = self.load_file(self.variable_options.VAR,
+                                    self.wrf_model, self.initialization_day)
         options = [t.strftime('%Y-%m-%d %H:%MZ') for t in self.times]
         self.select_time.end = len(options) - 1
         if self.select_time.value > self.select_time.end:
@@ -198,7 +194,7 @@ class FileSelection(object):
 
     @gen.coroutine
     def update_data(self):
-        masked_regrid, X, Y = load_data(self.valid_datetime)
+        masked_regrid, X, Y = self.load_data(self.valid_datetime)
         xn = X[0]
         yn = Y[:, 0]
         self.source.data.update({'masked_regrid': [masked_regrid],
@@ -206,4 +202,4 @@ class FileSelection(object):
                                  'valid_date': [self.valid_datetime]})
 
     def get_timeseries(self, xi, yi):
-        return load_tseries(xi, yi)
+        return self.load_tseries(xi, yi)
