@@ -1,0 +1,13 @@
+fill_color: &fill_color '#f5f5f5'
+attrs:
+  Figure:
+    background_fill_color: *fill_color
+    border_fill_color: *fill_color
+    outline_line_color: *fill_color
+  ColorBar:
+    background_fill_color: *fill_color
+  Grid:
+    grid_line_color: '#e0e0e0'
+
+    
+    
