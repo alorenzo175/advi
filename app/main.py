@@ -55,7 +55,7 @@ class ADVIApp(object):
     def __init__(self, variable):
         self.variable = variable
         self.variable_options = config.VAR_OPTS[variable]
-        self.tools = 'pan, box_zoom, reset, save'
+        self.tools = 'pan, box_zoom, reset, save, wheel_zoom'
         self.width = 768
         self.height = int(self.width / 1.6)
         self._first = True
@@ -101,17 +101,17 @@ class ADVIApp(object):
         self.make_sources()
         self.make_map_figure()
         self.make_histogram_figure()
-        self.models['info_div'] = Div(width=self.width)
+        self.models['info_div'] = Div(sizing_mode=config.SIZING_MODE)
         self.make_timeseries_figure()
 
     def make_map_figure(self):
         map_fig = figure(plot_width=self.width, plot_height=self.height,
                          y_axis_type=None, x_axis_type=None,
-                         toolbar_location='left',
-                         tools=self.tools + ', wheel_zoom',
+                         toolbar_location=None,
+                         tools=self.tools,
                          active_scroll='wheel_zoom',
                          title='', name='mapfig',
-                         responsive=True)
+                         sizing_mode=config.SIZING_MODE)
 
         map_fig.image(image='image', x='x', y='y', dw='dw', dh='dh',
                       source=self.sources['rgba_img'],
@@ -173,15 +173,18 @@ class ADVIApp(object):
         hheight = int(self.width / 2)
         # Make the histogram figure
         hist_fig = figure(plot_width=hheight, plot_height=hheight,
-                          toolbar_location='right',
+                          toolbar_location=None,
                           x_axis_label=self.variable_options.XLABEL,
                           y_axis_label='Counts',
-                          tools=self.tools + ', ywheel_zoom',
-                          active_scroll='ywheel_zoom',
+                          y_axis_location='right',
+                          tools=self.tools,
+                          active_scroll='wheel_zoom',
                           x_range=Range1d(start=self.variable_options.MIN_VAL,
                                           end=self.variable_options.MAX_VAL),
-                          title='Histogram of map pixels')
+                          title='Histogram of map pixels',
+                          sizing_mode=config.SIZING_MODE)
 
+        hist_fig.y_range.start = 0
         # make histograms
         bin_width = self.levels[1] - self.levels[0]
         self.sources['summary_stats'].data.update({'bin_width': [bin_width]})
@@ -194,7 +197,7 @@ class ADVIApp(object):
         hist_fig.diamond(
             x='current_val', y='bincounts', color=config.RED,
             source=self.sources['summary_stats'],
-            level='overlay', size=8)
+            level='overlay', size=7)
         self.models['hist_fig'] = hist_fig
 
     @gen.coroutine
@@ -251,13 +254,14 @@ class ADVIApp(object):
     def make_timeseries_figure(self):
         hheight = int(self.width / 2)
         tseries_fig = figure(
-            height=hheight, width=hheight,
+            plot_width=hheight, plot_height=hheight,
             x_axis_type='datetime',
-            tools=self.tools + ', wheel_zoom',
+            toolbar_location=None,
+            tools=self.tools,
             active_scroll='wheel_zoom',
-            toolbar_location='right',
             title='Time-series at selected location',
-            y_axis_label=self.variable_options.XLABEL)
+            y_axis_label=self.variable_options.XLABEL,
+            sizing_mode=config.SIZING_MODE)
 
         tseries_fig.line(x='x', y='y', color=config.BLUE,
                          source=self.sources['timeseries'])
@@ -309,8 +313,9 @@ class ADVIApp(object):
             self.fileselector.make_layout(),
             gridplot([self.models['map_fig']],
                      [self.models['timeseries_fig'], self.models['hist_fig']],
-                     toolbar_location='left'),
-            self.models['info_div']
+                     toolbar_location='left', sizing_mode=config.SIZING_MODE),
+            self.models['info_div'],
+            sizing_mode=config.SIZING_MODE
             )
         return lay
 

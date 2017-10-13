@@ -153,7 +153,9 @@ class FileSelection(object):
         self.update_wrf_models()
 
     def make_layout(self):
-        lay = row([self.select_day, self.select_model, self.select_time])
+        lay = row(self.select_day, self.select_model, self.select_time,
+                  sizing_mode=config.SIZING_MODE,
+                  width=768, height=100)
         return lay
 
     @property

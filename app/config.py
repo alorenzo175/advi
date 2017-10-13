@@ -13,6 +13,7 @@ DATA_DIRECTORY = '~/.wrf'
 WS_ORIGIN = os.getenv('WS_ORIGIN', 'localhost:5006')
 GA_TRACKING_ID = ''
 PREFIX = ''
+SIZING_MODE = 'scale_width'
 POSSIBLE_MODELS = ('WRFGFS_00Z', 'WRFGFS_06Z', 'WRFGFS_12Z',
                    'WRFNAM_00Z', 'WRFNAM_06Z', 'WRFNAM_12Z',
                    'WRFRUC_12Z')
